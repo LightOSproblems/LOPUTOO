@@ -22,6 +22,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
+#include "main.h"
 
 /* USER CODE END INCLUDE */
 
@@ -31,6 +32,7 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+uint8_t USB_COM_Port_open = 0;
 
 /* USER CODE END PV */
 
@@ -228,7 +230,13 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
     break;
 
     case CDC_SET_CONTROL_LINE_STATE:
-
+    	USBD_SetupReqTypedef * req = (USBD_SetupReqTypedef *)pbuf;
+    	if ((req->wValue & 0x0001) != 0){
+    		USB_COM_Port_open = 1;
+    	}
+    	else {
+    		USB_COM_Port_open = 0;
+    	}
     break;
 
     case CDC_SEND_BREAK:
@@ -263,6 +271,7 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   /* USER CODE BEGIN 6 */
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+  CDC_FS_RxDataReady_Callback(Buf, *Len); // User implemented callback
   return (USBD_OK);
   /* USER CODE END 6 */
 }

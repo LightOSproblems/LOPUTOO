@@ -53,7 +53,7 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+void CDC_FS_RxDataReady_Callback(uint8_t *, uint8_t);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

@@ -85,6 +85,15 @@ UART_HandleTypeDef hlpuart1;
 
 SPI_HandleTypeDef hspi1;
 
+uint8_t * USB_RxBuf;
+uint8_t USB_RxBufIndex = 0; // Index of the last character in the buffer
+
+uint8_t USB_RxBufLen;
+uint8_t USB_RxDataReadyFlag;
+
+extern uint8_t USB_COM_Port_open;
+
+uint8_t Reset = 0;
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -101,6 +110,89 @@ static void MX_SPI1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* A callback function for USB received data handling.
+ * NB! Must be kept short because it is triggered by an interrupt.
+ */
+void CDC_FS_RxDataReady_Callback(uint8_t * RxBuf, uint8_t Length){
+	USB_RxBuf = RxBuf;
+	USB_RxBufLen = Length;
+	USB_RxDataReadyFlag = 1;
+}
+
+void USB_Rx_Parser(void){
+	if (USB_RxDataReadyFlag){
+		CDC_Transmit_FS((uint8_t *) "\r\n", 2);
+		HAL_Delay(1);
+		/*
+		uint8_t Test[2] = {0};
+		Test[0] = USB_RxBufLen + 48;
+		CDC_Transmit_FS(Test, 2);
+		HAL_Delay(1);
+		*/
+		if (Reset){
+			if (USB_RxBufLen == 2){
+				switch (*USB_RxBuf){
+					case 'y':
+						CDC_Transmit_FS((uint8_t *) "RESTARTING!", 11);
+						NVIC_SystemReset(); // Reset the device
+					case 'n':
+						Reset = 0;
+						CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+						break;
+					default:
+						CDC_Transmit_FS((uint8_t *) "Reset the device? (y/n): ", 25);
+				}
+			}
+			else{
+				CDC_Transmit_FS((uint8_t *) "Reset the device? (y/n): ", 25);
+			}
+		}
+		else if (USB_RxBufLen == 2){
+
+			switch (*USB_RxBuf){
+			case 'l':
+				CDC_Transmit_FS((uint8_t *) "\nLIST OF COMMANDS:\r\n"
+						"\tR - Resets the device\r\n"
+						"\tr - Puts the device into receive mode\r\n"
+						"\tt - Puts the device into transmit mode\r\n"
+						"\ti - Returns the system info and settings\r\n\n"
+						, 169);
+				HAL_Delay(1);
+				CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+				break;
+			case 'y':
+				break;
+			case 'n':
+				break;
+			case 'R':
+				CDC_Transmit_FS((uint8_t *) "Reset the device? (y/n): ", 25);
+				Reset = 1;
+				break;
+			case 'r':
+				CDC_Transmit_FS((uint8_t *) "Receive mode active!\r\n", 22);
+				break;
+			case 't':
+				CDC_Transmit_FS((uint8_t *) "Transmit mode active!\r\n", 23);
+				break;
+			case 'i':
+				CDC_Transmit_FS((uint8_t *) "Device info mode!\r\n", 19);
+				break;
+			default:
+				CDC_Transmit_FS((uint8_t *) "Command not found!\r\n", 20);
+				HAL_Delay(1);
+				CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+			}
+		}
+		else if((strncmp((char *)USB_RxBuf, "test", 4) == 0) && (USB_RxBufLen == 5)){
+			CDC_Transmit_FS((uint8_t *) "Tested!\r\n", 9);
+			HAL_Delay(1);
+			CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+		}
+		USB_RxDataReadyFlag = 0; // Clear the flag
+	}
+}
+
 uint8_t Si4468_CmdTransmitReceive(uint8_t * TxBuf, uint8_t * RxBuf, uint8_t Length){
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET); // Pull SPI NSS low
 	uint8_t result = HAL_SPI_TransmitReceive(&hspi1, TxBuf, RxBuf, Length, HAL_MAX_DELAY);
@@ -149,7 +241,6 @@ uint8_t Si4468_CmdReadCmdReplyWhenReady(uint8_t * RxBuf, uint8_t Length){
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	char USB_TxBuf[1024], USB_RxBuf[1024];
 	uint8_t Si4468_TxBuf[64] = {0}; // For writing to Si4468 FIFO registers
 	uint8_t Si4468_RxBuf[64] = {0}; // For reading from Si4468 FIFO registers
 	uint8_t Si4468_CmdTxBuf[128], Si4468_CmdRxBuf[128];
@@ -185,9 +276,9 @@ int main(void)
   // ### Si4468 TRANSCEIVER STARTUP
   // Perform a POR (Power on reset)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);
-  HAL_Delay(10);
+  HAL_Delay(1); // A minimum of 10 us is required
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
-  HAL_Delay(10);
+  HAL_Delay(10); // POR should not take more than 6 ms, but let's be safe...
   // Send a POWER_UP command to Si4468
   Si4468_CmdTxBuf[0] = Si4468_POWER_UP;
   Si4468_CmdTxBuf[1] = 0x01;
@@ -219,6 +310,17 @@ int main(void)
   Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
   Si4468_CmdReadCmdReplyWhenReady(Si4468_CmdRxBuf, 8);
 
+  // Wait for the COM port to open:
+  while(!USB_COM_Port_open){
+	  //
+  };
+  HAL_Delay(1000);
+  // Send the welcome message:
+  CDC_Transmit_FS((uint8_t *) "PQ9 COM module V1.1 by 213415IACB\r\n", 35);
+  HAL_Delay(1);
+  CDC_Transmit_FS((uint8_t *) "Copyright (c): Ergo Haavasalu 2024, TalTech\r\n", 45);
+  HAL_Delay(1);
+  CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
 
   /* USER CODE END 2 */
 
@@ -226,10 +328,13 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  USB_Rx_Parser();
+	  /*
 	  sprintf(USB_TxBuf, "%u\r\n", counter);
 	  counter++;
 	  CDC_Transmit_FS((uint8_t *)USB_TxBuf, strlen(USB_TxBuf));
-	  HAL_Delay(500);
+	  HAL_Delay(5000);
+	  */
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
