@@ -85,10 +85,16 @@ UART_HandleTypeDef hlpuart1;
 
 SPI_HandleTypeDef hspi1;
 
-uint8_t * USB_RxBuf;
-uint8_t USB_RxBufIndex = 0; // Index of the last character in the buffer
+uint8_t USB_RxBuf[1024] = {0};
+uint8_t USB_RxBufIndex = 0; // Index of the last character in the USB Rx buffer
+uint8_t USB_RxBufFull = 0;
+uint8_t USB_RxBufOverflow = 0;
 
-uint8_t USB_RxBufLen;
+uint8_t ANSI_ColorsOn = 0;
+uint8_t RF_AmpSupplyOn = 0;
+uint8_t RF_AmpSupplyOnWarning = 1;
+
+uint16_t USB_RxBufLen = 1024;
 uint8_t USB_RxDataReadyFlag;
 
 extern uint8_t USB_COM_Port_open;
@@ -115,81 +121,243 @@ static void MX_SPI1_Init(void);
  * NB! Must be kept short because it is triggered by an interrupt.
  */
 void CDC_FS_RxDataReady_Callback(uint8_t * RxBuf, uint8_t Length){
-	USB_RxBuf = RxBuf;
-	USB_RxBufLen = Length;
-	USB_RxDataReadyFlag = 1;
+	if (Length == 1){
+		switch (*RxBuf){
+		case '\r': // Marks the end of buffer
+			CDC_Transmit_FS((uint8_t *) "\r\n", 2);
+			USB_RxDataReadyFlag = 1; // The contents of the buffer are ready to be parsed
+			break;
+		case '\b': // BACKSPACE key (backspace for Minicom)
+			if (USB_RxBufIndex > 0){
+				USB_RxBufIndex--; // Take a step back in the buffer
+			}
+			break;
+		case 0x7F: // DEL key (backspace for Picocom and Tio)
+			if (USB_RxBufIndex > 0){
+				USB_RxBufIndex--; // Take a step back in the buffer
+			}
+			break;
+		default:
+			if (USB_RxBufIndex < (USB_RxBufLen - 1)){
+				USB_RxBuf[USB_RxBufIndex] = *RxBuf;
+				USB_RxBufIndex++;
+			}
+			else if (USB_RxBufIndex == USB_RxBufLen - 1){
+				USB_RxBuf[USB_RxBufIndex] = *RxBuf;
+				USB_RxBufFull = 1;
+			}
+			else{
+				USB_RxBufOverflow = 1;
+			}
+		}
+	}
+	else {
+		// Copy the contents of the main USB buffer to a secondary buffer for parsing
+		strncpy((char *) USB_RxBuf, (char *) RxBuf, Length);
+		USB_RxBufLen = Length;
+		USB_RxDataReadyFlag = 1;
+	}
 }
 
 void USB_Rx_Parser(void){
 	if (USB_RxDataReadyFlag){
-		CDC_Transmit_FS((uint8_t *) "\r\n", 2);
-		HAL_Delay(1);
-		/*
-		uint8_t Test[2] = {0};
-		Test[0] = USB_RxBufLen + 48;
-		CDC_Transmit_FS(Test, 2);
-		HAL_Delay(1);
-		*/
 		if (Reset){
-			if (USB_RxBufLen == 2){
+			if (USB_RxBufIndex == 1){
 				switch (*USB_RxBuf){
 					case 'y':
-						CDC_Transmit_FS((uint8_t *) "RESTARTING!", 11);
+						if (ANSI_ColorsOn){
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mRESTARTING!\r\n\e[37m\e[0m", 31);
+						}
+						else{
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "RESTARTING!\r\n", 13);
+						}
+						HAL_Delay(1);
 						NVIC_SystemReset(); // Reset the device
 					case 'n':
 						Reset = 0;
-						CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+						HAL_Delay(1);
+						CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 						break;
 					default:
+						HAL_Delay(1);
 						CDC_Transmit_FS((uint8_t *) "Reset the device? (y/n): ", 25);
 				}
 			}
 			else{
+				HAL_Delay(1);
 				CDC_Transmit_FS((uint8_t *) "Reset the device? (y/n): ", 25);
 			}
 		}
-		else if (USB_RxBufLen == 2){
-
+		else if (USB_RxBufIndex == 1){
 			switch (*USB_RxBuf){
 			case 'l':
-				CDC_Transmit_FS((uint8_t *) "\nLIST OF COMMANDS:\r\n"
-						"\tR - Resets the device\r\n"
-						"\tr - Puts the device into receive mode\r\n"
-						"\tt - Puts the device into transmit mode\r\n"
-						"\ti - Returns the system info and settings\r\n\n"
-						, 169);
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[36m\r\nLIST OF COMMANDS:\r\n\e[37m"
+						"\tc - Enable ANSI terminal color codes\r\n"
+						"\ti - Return the system info and settings\r\n"
+						"\tp - Toggle the RF power amplifier 5 V supply\r\n"
+						"\tr - Put the device into receive mode\r\n"
+						"\tR - Reset the device\r\n"
+						"\tt - Put the device into transmit mode\r\n\n"
+						, 262);
+				}
+				else{
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\r\nLIST OF COMMANDS:\r\n"
+							"\tc - Enable ANSI terminal color codes\r\n"
+							"\ti - Return the system info and settings\r\n"
+							"\tp - Toggle the RF power amplifier 5 V supply\r\n"
+							"\tr - Put the device into receive mode\r\n"
+							"\tR - Reset the device\r\n"
+							"\tt - Put the device into transmit mode\r\n\n"
+							, 252);
+				}
 				HAL_Delay(1);
-				CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+				CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 				break;
-			case 'y':
-				break;
-			case 'n':
+			case 'c':
+				ANSI_ColorsOn ^= 0x01; // Toggle the terminal color mode
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[32mANSI COLORS ACTIVATED!\e[37m\r\n", 36);
+				}
+				else{
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[31mANSI COLORS DEACTIVATED!\e[37m\r\n", 36);
+				}
+				HAL_Delay(1);
+				CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 				break;
 			case 'R':
+				HAL_Delay(1);
 				CDC_Transmit_FS((uint8_t *) "Reset the device? (y/n): ", 25);
 				Reset = 1;
 				break;
 			case 'r':
-				CDC_Transmit_FS((uint8_t *) "Receive mode active!\r\n", 22);
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[32mReceive mode active!\e[37m\r\n", 32);
+				}
+				else{
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "Receive mode active!\r\n", 22);
+				}
 				break;
 			case 't':
-				CDC_Transmit_FS((uint8_t *) "Transmit mode active!\r\n", 23);
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[32mTransmit mode active!\e[37m\r\n", 33);
+				}
+				else{
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "Transmit mode active!\r\n", 23);
+				}
 				break;
 			case 'i':
-				CDC_Transmit_FS((uint8_t *) "Device info mode!\r\n", 19);
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[32m\r\nDevice info mode!\e[37m\r\n", 31);
+				}
+				else{
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "Device info mode!\r\n", 19);
+				}
+				break;
+			case 'p':
+				if (RF_AmpSupplyOnWarning){
+					if (ANSI_ColorsOn){
+						HAL_Delay(1);
+						CDC_Transmit_FS((uint8_t *) "\e[31m\e[1mWARNING!\e[0m\e[31m When the amplifier is turned on, the current\r\n"
+								"consumption increases way above 500 mA. Make sure your USB port\r\n"
+								"can handle this load. To proceed, repeat the command.\e[37m\r\n"
+								, 198);
+						HAL_Delay(1);
+						CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+					}
+					else{
+						HAL_Delay(1);
+						CDC_Transmit_FS((uint8_t *) "WARNING! When the amplifier is turned on, the current\r\n"
+								"consumption increases way above 500 mA. Make sure your USB port\r\n"
+								"can handle this load. To proceed, repeat the command.\r\n"
+								, 175);
+						HAL_Delay(1);
+						CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+					}
+					RF_AmpSupplyOnWarning = 0;
+				}
+				else{
+					RF_AmpSupplyOn ^= 0x01; // Toggle the RF amp flag
+					if (RF_AmpSupplyOn){
+						if (ANSI_ColorsOn){
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "\e[1m\e[32m# RF AMPLIFIER SUPPLY ON!\e[37m\r\n\e[0m", 45);
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						}
+						else{
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "# RF AMPLIFIER SUPPLY ON!\r\n", 27);
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						}
+						HAL_Delay(1);
+						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); // Turn the RF amplifier ON
+					}
+					else{
+						if (ANSI_ColorsOn){
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "\e[1m\e[31m# RF AMPLIFIER SUPPLY OFF!\e[37m\r\n\e[0m", 46);
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						}
+						else{
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "# RF AMPLIFIER SUPPLY OFF!\r\n", 28);
+							HAL_Delay(1);
+							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						}
+						HAL_Delay(1);
+						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier OFF
+						RF_AmpSupplyOnWarning = 1; // Reset the warning flag for next turn-on event
+					}
+				}
 				break;
 			default:
-				CDC_Transmit_FS((uint8_t *) "Command not found!\r\n", 20);
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mCOMMAND NOT FOUND!\e[37m\e[0m\r\n", 38);
+				}
+				else{
+					HAL_Delay(1);
+					CDC_Transmit_FS((uint8_t *) "COMMAND NOT FOUND!\r\n", 20);
+				}
 				HAL_Delay(1);
 				CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
 			}
 		}
-		else if((strncmp((char *)USB_RxBuf, "test", 4) == 0) && (USB_RxBufLen == 5)){
-			CDC_Transmit_FS((uint8_t *) "Tested!\r\n", 9);
+		else if((strncmp((char *)USB_RxBuf, "test", 4) == 0) && (USB_RxBufIndex == 4)){
+			HAL_Delay(1);
+			CDC_Transmit_FS((uint8_t *) "\r\nTested!\r\n", 11);
+			HAL_Delay(1);
+			CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+		}
+		else{
+			if (ANSI_ColorsOn){
+				HAL_Delay(1);
+				CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mCOMMAND NOT FOUND!\e[37m\e[0m\r\n", 38);
+			}
+			else{
+				HAL_Delay(1);
+				CDC_Transmit_FS((uint8_t *) "COMMAND NOT FOUND!\r\n", 20);
+			}
 			HAL_Delay(1);
 			CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
 		}
 		USB_RxDataReadyFlag = 0; // Clear the flag
+		USB_RxBufIndex = 0; // Reset the index
 	}
 }
 
@@ -244,7 +412,6 @@ int main(void)
 	uint8_t Si4468_TxBuf[64] = {0}; // For writing to Si4468 FIFO registers
 	uint8_t Si4468_RxBuf[64] = {0}; // For reading from Si4468 FIFO registers
 	uint8_t Si4468_CmdTxBuf[128], Si4468_CmdRxBuf[128];
-	uint8_t counter = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
