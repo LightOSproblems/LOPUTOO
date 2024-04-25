@@ -71,6 +71,9 @@
 #define Si4468_WRITE_TX_FIFO 0x66
 #define Si4468_READ_RX_FIFO 0x77
 
+#define Si4468_TX_STATE 0x07
+#define Si4468_RX_STATE 0x08
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -84,6 +87,9 @@ ADC_HandleTypeDef hadc1;
 UART_HandleTypeDef hlpuart1;
 
 SPI_HandleTypeDef hspi1;
+
+/* USER CODE BEGIN PV */
+uint16_t ADC_Raw_Results[2];
 
 uint8_t USB_RxBuf[1024] = {0};
 uint8_t USB_RxBufIndex = 0; // Index of the last character in the USB Rx buffer
@@ -100,7 +106,6 @@ uint8_t USB_RxDataReadyFlag;
 extern uint8_t USB_COM_Port_open;
 
 uint8_t Reset = 0;
-/* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
 
@@ -110,7 +115,15 @@ static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_SPI1_Init(void);
+
 /* USER CODE BEGIN PFP */
+
+void USB_Rx_Parser(void);
+uint8_t Si4468_CmdTransmitReceive(uint8_t * TxBuf, uint8_t * RxBuf, uint8_t Length);
+uint8_t Si4468_CmdTransmit(uint8_t * RxBuf, uint8_t Length);
+uint8_t Si4468_CmdReceive(uint8_t * RxBuf, uint8_t Length);
+uint8_t Si4468_CmdReadCmdReplyWhenReady(uint8_t * RxBuf, uint8_t Length);
+void Si4468_WaitForCTS(void);
 
 /* USER CODE END PFP */
 
@@ -196,13 +209,14 @@ void USB_Rx_Parser(void){
 				if (ANSI_ColorsOn){
 					HAL_Delay(1);
 					CDC_Transmit_FS((uint8_t *) "\e[36m\r\nLIST OF COMMANDS:\r\n\e[37m"
-						"\tc - Enable ANSI terminal color codes\r\n"
-						"\ti - Return the system info and settings\r\n"
-						"\tp - Toggle the RF power amplifier 5 V supply\r\n"
-						"\tr - Put the device into receive mode\r\n"
-						"\tR - Reset the device\r\n"
-						"\tt - Put the device into transmit mode\r\n\n"
-						, 262);
+							"\tc - Enable ANSI terminal color codes\r\n"
+							"\ti - Return the system info and settings\r\n"
+							"\tp - Toggle the RF power amplifier 5 V supply\r\n"
+							"\tr - Put the device into receive mode\r\n"
+							"\tR - Reset the device\r\n"
+							"\tt - Put the device into transmit mode\r\n"
+							"\tm - Display the measured Tx/Rx power levels\r\n\n"
+							, 308);
 				}
 				else{
 					HAL_Delay(1);
@@ -212,11 +226,44 @@ void USB_Rx_Parser(void){
 							"\tp - Toggle the RF power amplifier 5 V supply\r\n"
 							"\tr - Put the device into receive mode\r\n"
 							"\tR - Reset the device\r\n"
-							"\tt - Put the device into transmit mode\r\n\n"
-							, 252);
+							"\tt - Put the device into transmit mode\r\n"
+							"\tm - Display the measured Tx/Rx power levels\r\n\n"
+							, 298);
 				}
 				HAL_Delay(1);
 				CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+				break;
+			case 'm':
+				uint8_t MsgTxBuf[32];
+				if (ANSI_ColorsOn){
+					HAL_Delay(1);
+					MsgTxBuf[0] = '\e';
+					MsgTxBuf[1] = '[';
+					MsgTxBuf[2] = '3';
+					MsgTxBuf[3] = '2';
+					MsgTxBuf[4] = 'm';
+
+					MsgTxBuf[5] = (uint8_t) ADC_Raw_Results[0];
+					MsgTxBuf[6] = (uint8_t) (ADC_Raw_Results[0] >> 8);
+
+					MsgTxBuf[7] = '\e';
+					MsgTxBuf[8] = '[';
+					MsgTxBuf[9] = '3';
+					MsgTxBuf[10] = '7';
+					MsgTxBuf[11] = 'm';
+					MsgTxBuf[12] = '\r';
+					MsgTxBuf[13] = '\n';
+					CDC_Transmit_FS((uint8_t *) MsgTxBuf, 14);
+				}
+				else{
+					HAL_Delay(1);
+					MsgTxBuf[0] = (uint8_t) ADC_Raw_Results[1];
+					MsgTxBuf[1] = (uint8_t) (ADC_Raw_Results[1] >> 8);
+
+					MsgTxBuf[2] = '\r';
+					MsgTxBuf[3] = '\n';
+					CDC_Transmit_FS((uint8_t *) MsgTxBuf, 4);
+				}
 				break;
 			case 'c':
 				ANSI_ColorsOn ^= 0x01; // Toggle the terminal color mode
@@ -237,6 +284,12 @@ void USB_Rx_Parser(void){
 				Reset = 1;
 				break;
 			case 'r':
+				uint8_t Si4468_CmdTxBuf[2], Si4468_CmdRxBuf[2];
+				Si4468_CmdTxBuf[0] = Si4468_CHANGE_STATE;
+				Si4468_CmdTxBuf[1] = Si4468_RX_STATE; // RX
+				Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
+				Si4468_WaitForCTS();
+
 				if (ANSI_ColorsOn){
 					HAL_Delay(1);
 					CDC_Transmit_FS((uint8_t *) "\e[32mReceive mode active!\e[37m\r\n", 32);
@@ -247,6 +300,11 @@ void USB_Rx_Parser(void){
 				}
 				break;
 			case 't':
+				Si4468_CmdTxBuf[0] = Si4468_CHANGE_STATE;
+				Si4468_CmdTxBuf[1] = Si4468_TX_STATE; // RX
+				Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
+				Si4468_WaitForCTS();
+
 				if (ANSI_ColorsOn){
 					HAL_Delay(1);
 					CDC_Transmit_FS((uint8_t *) "\e[32mTransmit mode active!\e[37m\r\n", 33);
@@ -304,7 +362,8 @@ void USB_Rx_Parser(void){
 							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 						}
 						HAL_Delay(1);
-						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); // Turn the RF amplifier ON
+						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); // Turn the RF amplifier stage 1 ON
+						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET); // Turn the RF amplifier stage 2 ON
 					}
 					else{
 						if (ANSI_ColorsOn){
@@ -320,7 +379,8 @@ void USB_Rx_Parser(void){
 							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 						}
 						HAL_Delay(1);
-						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier OFF
+						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier stage 1 OFF
+						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_RESET); // Turn the RF amplifier stage 2 OFF
 						RF_AmpSupplyOnWarning = 1; // Reset the warning flag for next turn-on event
 					}
 				}
@@ -400,6 +460,15 @@ uint8_t Si4468_CmdReadCmdReplyWhenReady(uint8_t * RxBuf, uint8_t Length){
 	if (result != HAL_OK) return 1;
 	return 0;
 }
+
+void Si4468_WaitForCTS(void){
+	uint8_t Si4468_CmdTxBuf[2], Si4468_CmdRxBuf[2];
+	Si4468_CmdTxBuf[0] = Si4468_READ_CMD_BUFF;
+	Si4468_CmdRxBuf[1] = 0;
+	while(Si4468_CmdRxBuf[1] != 0xFF){
+		Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
+	}
+}
 /* USER CODE END 0 */
 
 /**
@@ -438,13 +507,14 @@ int main(void)
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_SET); // Set SPI NSS high
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the amplifier OFF (drive EN low)
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_RESET); // Turn the RF amplifier stage 2 OFF
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier stage 1 OFF
 
   // ### Si4468 TRANSCEIVER STARTUP
   // Perform a POR (Power on reset)
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
   HAL_Delay(1); // A minimum of 10 us is required
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_10, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
   HAL_Delay(10); // POR should not take more than 6 ms, but let's be safe...
   // Send a POWER_UP command to Si4468
   Si4468_CmdTxBuf[0] = Si4468_POWER_UP;
@@ -463,11 +533,7 @@ int main(void)
    * The transceiver will be ready when the returned value of
    * CTS (clear to send) byte will be equal to 0xFF
    */
-  Si4468_CmdTxBuf[0] = Si4468_READ_CMD_BUFF;
-  Si4468_CmdRxBuf[1] = 0;
-  while(Si4468_CmdRxBuf[1] != 0xFF){
-	  Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
-  }
+  Si4468_WaitForCTS();
 
   /* Read the "part info" of the device to make sure the initialization worked
    * and we have a good SPI communication going...
@@ -476,6 +542,20 @@ int main(void)
   Si4468_CmdRxBuf[1] = 0;
   Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
   Si4468_CmdReadCmdReplyWhenReady(Si4468_CmdRxBuf, 8);
+  /* Configure the GPIO pins of the Si4468
+   *
+   */
+  Si4468_CmdTxBuf[0] = Si4468_GPIO_PIN_CFG;
+  Si4468_CmdTxBuf[1] = 0x01;
+  Si4468_CmdTxBuf[2] = 0x01;
+  Si4468_CmdTxBuf[3] = 0x21;
+  Si4468_CmdTxBuf[4] = 0x20;
+  Si4468_CmdTxBuf[5] = 0x27;
+  Si4468_CmdTxBuf[6] = 0x0B;
+  Si4468_CmdTxBuf[7] = 0x00;
+  Si4468_WaitForCTS();
+  Si4468_CmdTransmit(Si4468_CmdTxBuf, 8);
+  Si4468_WaitForCTS();
 
   // Wait for the COM port to open:
   while(!USB_COM_Port_open){
@@ -483,7 +563,7 @@ int main(void)
   };
   HAL_Delay(1000);
   // Send the welcome message:
-  CDC_Transmit_FS((uint8_t *) "PQ9 COM module V1.1 by 213415IACB\r\n", 35);
+  CDC_Transmit_FS((uint8_t *) "PQ9 COM module V2.0 by 213415IACB\r\n", 35);
   HAL_Delay(1);
   CDC_Transmit_FS((uint8_t *) "Copyright (c): Ergo Haavasalu 2024, TalTech\r\n", 45);
   HAL_Delay(1);
@@ -718,7 +798,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(BOOST_EN_GPIO_Port, BOOST_EN_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, RF_AMP_EN1_Pin|RF_AMP_EN2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, SYS_RST_Pin|TRANS_SDN_Pin|SPI1_NSS_Pin, GPIO_PIN_RESET);
@@ -726,12 +806,18 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, FWD_MEAS_AMP_EN_Pin|REV_MEAS_AMP_EN_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : BOOST_EN_Pin */
-  GPIO_InitStruct.Pin = BOOST_EN_Pin;
+  /*Configure GPIO pins : RF_AMP_EN1_Pin RF_AMP_EN2_Pin */
+  GPIO_InitStruct.Pin = RF_AMP_EN1_Pin|RF_AMP_EN2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(BOOST_EN_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : TRANS_GPIO1_Pin TRANS_GPIO0_Pin LDO_PG_Pin */
+  GPIO_InitStruct.Pin = TRANS_GPIO1_Pin|TRANS_GPIO0_Pin|LDO_PG_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : SYS_RST_Pin TRANS_SDN_Pin */
   GPIO_InitStruct.Pin = SYS_RST_Pin|TRANS_SDN_Pin;
@@ -745,12 +831,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(TRANS_NIRQ_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : LDO_PG_Pin */
-  GPIO_InitStruct.Pin = LDO_PG_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(LDO_PG_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : SPI1_NSS_Pin */
   GPIO_InitStruct.Pin = SPI1_NSS_Pin;
