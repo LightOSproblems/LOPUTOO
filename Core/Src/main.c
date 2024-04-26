@@ -29,6 +29,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "usbd_cdc_if.h"
+#include "radio_config_Si4468.h"
 
 /* USER CODE END Includes */
 
@@ -73,6 +74,21 @@
 
 #define Si4468_TX_STATE 0x07
 #define Si4468_RX_STATE 0x08
+
+#define ANSI_COLORS_OFF 0x00
+#define ANSI_COLORS_ON 0x01
+
+enum {
+	MSG_WELCOME,
+	MSG_CMD_LIST,
+	MSG_ENTER_CMD,
+	MSG_CMD_NOT_FOUND,
+	MSG_COLORS_ACTIVE,
+	MSG_COLORS_INACTIVE,
+	MSG_RF_AMP_WARNING,
+	MSG_RF_AMP_ON,
+	MSG_RF_AMP_OFF
+};
 
 /* USER CODE END PD */
 
@@ -124,6 +140,7 @@ uint8_t Si4468_CmdTransmit(uint8_t * RxBuf, uint8_t Length);
 uint8_t Si4468_CmdReceive(uint8_t * RxBuf, uint8_t Length);
 uint8_t Si4468_CmdReadCmdReplyWhenReady(uint8_t * RxBuf, uint8_t Length);
 void Si4468_WaitForCTS(void);
+void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_Message);
 
 /* USER CODE END PFP */
 
@@ -144,6 +161,9 @@ void CDC_FS_RxDataReady_Callback(uint8_t * RxBuf, uint8_t Length){
 			if (USB_RxBufIndex > 0){
 				USB_RxBufIndex--; // Take a step back in the buffer
 			}
+			break;
+		case 0x0C:
+			CDC_Transmit_FS((uint8_t *) "\e[2J\e[0;0HEnter a command: ", 27);
 			break;
 		case 0x7F: // DEL key (backspace for Picocom and Tio)
 			if (USB_RxBufIndex > 0){
@@ -190,8 +210,7 @@ void USB_Rx_Parser(void){
 						NVIC_SystemReset(); // Reset the device
 					case 'n':
 						Reset = 0;
-						HAL_Delay(1);
-						CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_ENTER_CMD);
 						break;
 					default:
 						HAL_Delay(1);
@@ -207,31 +226,12 @@ void USB_Rx_Parser(void){
 			switch (*USB_RxBuf){
 			case 'l':
 				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[36m\r\nLIST OF COMMANDS:\r\n\e[37m"
-							"\tc - Enable ANSI terminal color codes\r\n"
-							"\ti - Return the system info and settings\r\n"
-							"\tp - Toggle the RF power amplifier 5 V supply\r\n"
-							"\tr - Put the device into receive mode\r\n"
-							"\tR - Reset the device\r\n"
-							"\tt - Put the device into transmit mode\r\n"
-							"\tm - Display the measured Tx/Rx power levels\r\n\n"
-							, 308);
+					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_CMD_LIST);
 				}
 				else{
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\r\nLIST OF COMMANDS:\r\n"
-							"\tc - Enable ANSI terminal color codes\r\n"
-							"\ti - Return the system info and settings\r\n"
-							"\tp - Toggle the RF power amplifier 5 V supply\r\n"
-							"\tr - Put the device into receive mode\r\n"
-							"\tR - Reset the device\r\n"
-							"\tt - Put the device into transmit mode\r\n"
-							"\tm - Display the measured Tx/Rx power levels\r\n\n"
-							, 298);
+					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_CMD_LIST);
 				}
-				HAL_Delay(1);
-				CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_ENTER_CMD);
 				break;
 			case 'm':
 				uint8_t MsgTxBuf[32];
@@ -268,15 +268,12 @@ void USB_Rx_Parser(void){
 			case 'c':
 				ANSI_ColorsOn ^= 0x01; // Toggle the terminal color mode
 				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[32mANSI COLORS ACTIVATED!\e[37m\r\n", 36);
+					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_COLORS_ACTIVE);
 				}
 				else{
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[31mANSI COLORS DEACTIVATED!\e[37m\r\n", 36);
+					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_COLORS_INACTIVE);
 				}
-				HAL_Delay(1);
-				CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_ENTER_CMD);
 				break;
 			case 'R':
 				HAL_Delay(1);
@@ -301,7 +298,7 @@ void USB_Rx_Parser(void){
 				break;
 			case 't':
 				Si4468_CmdTxBuf[0] = Si4468_CHANGE_STATE;
-				Si4468_CmdTxBuf[1] = Si4468_TX_STATE; // RX
+				Si4468_CmdTxBuf[1] = Si4468_TX_STATE; // TX
 				Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
 				Si4468_WaitForCTS();
 
@@ -327,22 +324,12 @@ void USB_Rx_Parser(void){
 			case 'p':
 				if (RF_AmpSupplyOnWarning){
 					if (ANSI_ColorsOn){
-						HAL_Delay(1);
-						CDC_Transmit_FS((uint8_t *) "\e[31m\e[1mWARNING!\e[0m\e[31m When the amplifier is turned on, the current\r\n"
-								"consumption increases way above 500 mA. Make sure your USB port\r\n"
-								"can handle this load. To proceed, repeat the command.\e[37m\r\n"
-								, 198);
-						HAL_Delay(1);
-						CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_RF_AMP_WARNING);
+						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_ENTER_CMD);
 					}
 					else{
-						HAL_Delay(1);
-						CDC_Transmit_FS((uint8_t *) "WARNING! When the amplifier is turned on, the current\r\n"
-								"consumption increases way above 500 mA. Make sure your USB port\r\n"
-								"can handle this load. To proceed, repeat the command.\r\n"
-								, 175);
-						HAL_Delay(1);
-						CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_RF_AMP_WARNING);
+						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_ENTER_CMD);
 					}
 					RF_AmpSupplyOnWarning = 0;
 				}
@@ -350,16 +337,10 @@ void USB_Rx_Parser(void){
 					RF_AmpSupplyOn ^= 0x01; // Toggle the RF amp flag
 					if (RF_AmpSupplyOn){
 						if (ANSI_ColorsOn){
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "\e[1m\e[32m# RF AMPLIFIER SUPPLY ON!\e[37m\r\n\e[0m", 45);
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_RF_AMP_ON);
 						}
 						else{
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "# RF AMPLIFIER SUPPLY ON!\r\n", 27);
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_RF_AMP_ON);
 						}
 						HAL_Delay(1);
 						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); // Turn the RF amplifier stage 1 ON
@@ -367,16 +348,10 @@ void USB_Rx_Parser(void){
 					}
 					else{
 						if (ANSI_ColorsOn){
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "\e[1m\e[31m# RF AMPLIFIER SUPPLY OFF!\e[37m\r\n\e[0m", 46);
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_RF_AMP_OFF);
 						}
 						else{
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "# RF AMPLIFIER SUPPLY OFF!\r\n", 28);
-							HAL_Delay(1);
-							CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_RF_AMP_OFF);
 						}
 						HAL_Delay(1);
 						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier stage 1 OFF
@@ -387,15 +362,11 @@ void USB_Rx_Parser(void){
 				break;
 			default:
 				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mCOMMAND NOT FOUND!\e[37m\e[0m\r\n", 38);
+					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_CMD_NOT_FOUND);
 				}
 				else{
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "COMMAND NOT FOUND!\r\n", 20);
+					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_CMD_NOT_FOUND);
 				}
-				HAL_Delay(1);
-				CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
 			}
 		}
 		else if((strncmp((char *)USB_RxBuf, "test", 4) == 0) && (USB_RxBufIndex == 4)){
@@ -406,18 +377,99 @@ void USB_Rx_Parser(void){
 		}
 		else{
 			if (ANSI_ColorsOn){
-				HAL_Delay(1);
-				CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mCOMMAND NOT FOUND!\e[37m\e[0m\r\n", 38);
+				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_CMD_NOT_FOUND);
 			}
 			else{
-				HAL_Delay(1);
-				CDC_Transmit_FS((uint8_t *) "COMMAND NOT FOUND!\r\n", 20);
+				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_CMD_NOT_FOUND);
 			}
-			HAL_Delay(1);
-			CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
 		}
 		USB_RxDataReadyFlag = 0; // Clear the flag
 		USB_RxBufIndex = 0; // Reset the index
+	}
+}
+
+void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_Message){
+	HAL_Delay(1);
+	switch(ANSI_Color_State){
+	case ANSI_COLORS_OFF:
+		switch(Select_Message){
+		case MSG_WELCOME:
+			CDC_Transmit_FS((uint8_t *) "\e[2J\e[0;0HPQ9 COM module V2.0 by 213415IACB\r\n"
+					"Copyright (c): Ergo Haavasalu 2024, TalTech\r\n"
+					"Enter a command (\"l\" for a list of available commands): ", 146);
+			break;
+		case MSG_CMD_LIST:
+			CDC_Transmit_FS((uint8_t *) "\r\nLIST OF COMMANDS:\r\n"
+					"\tc - Enable ANSI terminal color codes\r\n"
+					"\ti - Return the system info and settings\r\n"
+					"\tp - Toggle the RF power amplifier 5 V supply\r\n"
+					"\tr - Put the device into receive mode\r\n"
+					"\tR - Reset the device\r\n"
+					"\tt - Put the device into transmit mode\r\n"
+					"\tm - Display the measured Tx/Rx power levels\r\n\n", 298);
+			break;
+		case MSG_ENTER_CMD:
+			CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+			break;
+		case MSG_RF_AMP_WARNING:
+			CDC_Transmit_FS((uint8_t *) "WARNING! When the amplifier is turned on, the current\r\n"
+					"consumption increases way above 500 mA. Make sure your USB port\r\n"
+					"can handle this load. To proceed, repeat the command.\r\n", 175);
+			break;
+		case MSG_CMD_NOT_FOUND:
+			CDC_Transmit_FS((uint8_t *) "COMMAND NOT FOUND!\r\n"
+					"Enter a command (\"l\" for a list of available commands): ", 76);
+			break;
+		case MSG_RF_AMP_ON:
+			CDC_Transmit_FS((uint8_t *) "# RF AMPLIFIER SUPPLY ON!\r\n"
+					"Enter a command: ", 44);
+			break;
+		case MSG_RF_AMP_OFF:
+			CDC_Transmit_FS((uint8_t *) "# RF AMPLIFIER SUPPLY OFF!\r\n"
+					"Enter a command: ", 45);
+			break;
+		}
+		break;
+	case ANSI_COLORS_ON:
+		switch(Select_Message){
+		case MSG_CMD_LIST:
+			CDC_Transmit_FS((uint8_t *) "\e[36m\r\nLIST OF COMMANDS:\r\n\e[37m"
+					"\tc - Enable ANSI terminal color codes\r\n"
+					"\ti - Return the system info and settings\r\n"
+					"\tp - Toggle the RF power amplifier 5 V supply\r\n"
+					"\tr - Put the device into receive mode\r\n"
+					"\tR - Reset the device\r\n"
+					"\tt - Put the device into transmit mode\r\n"
+					"\tm - Display the measured Tx/Rx power levels\r\n\n", 308);
+			break;
+		case MSG_ENTER_CMD:
+			CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
+			break;
+		case MSG_COLORS_ACTIVE:
+			CDC_Transmit_FS((uint8_t *) "\e[32mANSI COLORS ACTIVATED!\e[37m\r\n", 36);
+			break;
+		case MSG_COLORS_INACTIVE:
+			CDC_Transmit_FS((uint8_t *) "\e[31mANSI COLORS DEACTIVATED!\e[37m\r\n", 36);
+			break;
+		case MSG_RF_AMP_WARNING:
+			CDC_Transmit_FS((uint8_t *) "\e[31m\e[1mWARNING!\e[0m\e[31m When the amplifier is turned on, the current\r\n"
+					"consumption increases way above 500 mA. Make sure your USB port\r\n"
+					"can handle this load. To proceed, repeat the command.\e[37m\r\n", 198);
+			break;
+		case MSG_CMD_NOT_FOUND:
+			CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mCOMMAND NOT FOUND!\e[37m\e[0m\r\n"
+					"Enter a command (\"l\" for a list of available commands): ", 94);
+			break;
+		case MSG_RF_AMP_ON:
+			CDC_Transmit_FS((uint8_t *) "\e[1m\e[32m# RF AMPLIFIER SUPPLY ON!\e[37m\r\n\e[0m"
+					"Enter a command: ", 62);
+			break;
+		case MSG_RF_AMP_OFF:
+			CDC_Transmit_FS((uint8_t *) "\e[1m\e[31m# RF AMPLIFIER SUPPLY OFF!\e[37m\r\n\e[0m"
+								"Enter a command: ", 63);
+			break;
+		}
+		break;
 	}
 }
 
@@ -478,6 +530,7 @@ void Si4468_WaitForCTS(void){
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+	uint8_t Si4468_ConfigArray[] = RADIO_CONFIGURATION_DATA_ARRAY;
 	uint8_t Si4468_TxBuf[64] = {0}; // For writing to Si4468 FIFO registers
 	uint8_t Si4468_RxBuf[64] = {0}; // For reading from Si4468 FIFO registers
 	uint8_t Si4468_CmdTxBuf[128], Si4468_CmdRxBuf[128];
@@ -516,6 +569,15 @@ int main(void)
   HAL_Delay(1); // A minimum of 10 us is required
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
   HAL_Delay(10); // POR should not take more than 6 ms, but let's be safe...
+
+  // Configure the Si4468 transceiver based on the settings in the header file
+  uint8_t i = 0;
+  uint16_t Si4468_ConfigArrayLength = sizeof(Si4468_ConfigArray)/sizeof(Si4468_ConfigArray[0]);
+  while (Si4468_ConfigArray[i] != 0x00){
+	  Si4468_CmdTransmit(&Si4468_ConfigArray[i + 1], Si4468_ConfigArray[i]);
+	  Si4468_WaitForCTS();
+	  i += (Si4468_ConfigArray[i] + 1);
+  }
   // Send a POWER_UP command to Si4468
   Si4468_CmdTxBuf[0] = Si4468_POWER_UP;
   Si4468_CmdTxBuf[1] = 0x01;
@@ -535,6 +597,71 @@ int main(void)
    */
   Si4468_WaitForCTS();
 
+  /* Set the XTAL capacitor bank to 0 when using a TCXO
+   *
+   */
+  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+  Si4468_CmdTxBuf[1] = 0x00; // Group
+  Si4468_CmdTxBuf[2] = 0x01; // Number of properties
+  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
+  Si4468_CmdTxBuf[4] = 0x00; // Data
+  Si4468_CmdTransmit(Si4468_CmdTxBuf, 5);
+  Si4468_WaitForCTS();
+
+  /* For testing purposes, put the Si4468 into Continuous Wave (CW) transmission mode
+   *
+   */
+  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+  Si4468_CmdTxBuf[1] = 0x20; // Group
+  Si4468_CmdTxBuf[2] = 0x01; // Number of properties
+  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
+  Si4468_CmdTxBuf[4] = 0x00; // Data
+  Si4468_CmdTransmit(Si4468_CmdTxBuf, 5);
+  Si4468_WaitForCTS();
+
+  /* Set the TX base frequency at 435 MHz
+   *
+   */
+  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+  Si4468_CmdTxBuf[1] = 0x40; // Group
+  Si4468_CmdTxBuf[2] = 0x08; // Number of properties
+  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
+  Si4468_CmdTxBuf[4] = 0x39; // PLL division integer 0x39
+  Si4468_CmdTxBuf[5] = 0x08; // PLL division fraction
+  Si4468_CmdTxBuf[6] = 0x00; // -,,-
+  Si4468_CmdTxBuf[7] = 0x00; // -,,-
+  Si4468_CmdTxBuf[8] = 0x05; //
+  Si4468_CmdTxBuf[9] = 0x3E; //
+  Si4468_CmdTxBuf[10] = 0x20; //
+  Si4468_CmdTxBuf[11] = 0xFE; //
+  Si4468_CmdTransmit(Si4468_CmdTxBuf, 12);
+  Si4468_WaitForCTS();
+
+  /* Set the frequency deviation
+   *
+   */
+  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+  Si4468_CmdTxBuf[1] = 0x20; // Group
+  Si4468_CmdTxBuf[2] = 0x01; // Number of properties
+  Si4468_CmdTxBuf[3] = 0x0C; // Index of the first property to be set
+  Si4468_CmdTxBuf[4] = 0x50;
+  Si4468_CmdTransmit(Si4468_CmdTxBuf, 5);
+  Si4468_WaitForCTS();
+
+  /* Set the output power
+   *
+   */
+  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+  Si4468_CmdTxBuf[1] = 0x22; // Group
+  Si4468_CmdTxBuf[2] = 0x04; // Number of properties
+  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
+  Si4468_CmdTxBuf[4] = 0x08;
+  Si4468_CmdTxBuf[5] = 0x7F; // Power level [0x00 ; 0x7F]
+  Si4468_CmdTxBuf[6] = 0x00;
+  Si4468_CmdTxBuf[7] = 0x1D;
+  Si4468_CmdTransmit(Si4468_CmdTxBuf, 8);
+  Si4468_WaitForCTS();
+
   /* Read the "part info" of the device to make sure the initialization worked
    * and we have a good SPI communication going...
    */
@@ -542,14 +669,15 @@ int main(void)
   Si4468_CmdRxBuf[1] = 0;
   Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
   Si4468_CmdReadCmdReplyWhenReady(Si4468_CmdRxBuf, 8);
+
   /* Configure the GPIO pins of the Si4468
    *
    */
   Si4468_CmdTxBuf[0] = Si4468_GPIO_PIN_CFG;
   Si4468_CmdTxBuf[1] = 0x01;
   Si4468_CmdTxBuf[2] = 0x01;
-  Si4468_CmdTxBuf[3] = 0x21;
-  Si4468_CmdTxBuf[4] = 0x20;
+  Si4468_CmdTxBuf[3] = 0x20;
+  Si4468_CmdTxBuf[4] = 0x21;
   Si4468_CmdTxBuf[5] = 0x27;
   Si4468_CmdTxBuf[6] = 0x0B;
   Si4468_CmdTxBuf[7] = 0x00;
@@ -563,11 +691,7 @@ int main(void)
   };
   HAL_Delay(1000);
   // Send the welcome message:
-  CDC_Transmit_FS((uint8_t *) "PQ9 COM module V2.0 by 213415IACB\r\n", 35);
-  HAL_Delay(1);
-  CDC_Transmit_FS((uint8_t *) "Copyright (c): Ergo Haavasalu 2024, TalTech\r\n", 45);
-  HAL_Delay(1);
-  CDC_Transmit_FS((uint8_t *) "Enter a command (\"l\" for a list of available commands): ", 56);
+  USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_WELCOME);
 
   /* USER CODE END 2 */
 
