@@ -87,7 +87,22 @@ enum {
 	MSG_COLORS_INACTIVE,
 	MSG_RF_AMP_WARNING,
 	MSG_RF_AMP_ON,
-	MSG_RF_AMP_OFF
+	MSG_RF_AMP_OFF,
+	MSG_OPAMPS_ON,
+	MSG_OPAMPS_OFF,
+	MSG_MEAS_MODE_ON,
+	MSG_MEAS_MODE_OFF,
+	MSG_TX_MODE_ON,
+	MSG_TX_MODE_OFF,
+	MSG_RX_MODE_ON,
+	MSG_RX_MODE_OFF,
+	MSG_DEVICE_INFO
+};
+
+enum {
+	STATE_IDLE,
+	STATE_RX,
+	STATE_TX,
 };
 
 /* USER CODE END PD */
@@ -99,13 +114,14 @@ enum {
 
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
 
 UART_HandleTypeDef hlpuart1;
 
 SPI_HandleTypeDef hspi1;
 
 /* USER CODE BEGIN PV */
-uint16_t ADC_Raw_Results[2];
+uint32_t ADC_Raw_Results[2];
 
 uint8_t USB_RxBuf[1024] = {0};
 uint8_t USB_RxBufIndex = 0; // Index of the last character in the USB Rx buffer
@@ -122,16 +138,20 @@ uint8_t USB_RxDataReadyFlag;
 extern uint8_t USB_COM_Port_open;
 
 uint8_t Reset = 0;
+uint8_t ExitSignalReceived = 0;
+uint8_t DenyReturnKey = 0;
+
+uint8_t DeviceState = STATE_IDLE;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_SPI1_Init(void);
-
 /* USER CODE BEGIN PFP */
 
 void USB_Rx_Parser(void);
@@ -141,6 +161,8 @@ uint8_t Si4468_CmdReceive(uint8_t * RxBuf, uint8_t Length);
 uint8_t Si4468_CmdReadCmdReplyWhenReady(uint8_t * RxBuf, uint8_t Length);
 void Si4468_WaitForCTS(void);
 void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_Message);
+uint8_t ParseUSBInputAsInteger(uint32_t * result);
+double ConvertTxADCtoPower(uint32_t ADCrawResult);
 
 /* USER CODE END PFP */
 
@@ -154,8 +176,10 @@ void CDC_FS_RxDataReady_Callback(uint8_t * RxBuf, uint8_t Length){
 	if (Length == 1){
 		switch (*RxBuf){
 		case '\r': // Marks the end of buffer
-			CDC_Transmit_FS((uint8_t *) "\r\n", 2);
-			USB_RxDataReadyFlag = 1; // The contents of the buffer are ready to be parsed
+			if (!DenyReturnKey){
+				CDC_Transmit_FS((uint8_t *) "\r\n", 2);
+				USB_RxDataReadyFlag = 1; // The contents of the buffer are ready to be parsed
+			}
 			break;
 		case '\b': // BACKSPACE key (backspace for Minicom)
 			if (USB_RxBufIndex > 0){
@@ -164,6 +188,9 @@ void CDC_FS_RxDataReady_Callback(uint8_t * RxBuf, uint8_t Length){
 			break;
 		case 0x0C:
 			CDC_Transmit_FS((uint8_t *) "\e[2J\e[0;0HEnter a command: ", 27);
+			break;
+		case 'x':
+			ExitSignalReceived = 1;
 			break;
 		case 0x7F: // DEL key (backspace for Picocom and Tio)
 			if (USB_RxBufIndex > 0){
@@ -193,8 +220,13 @@ void CDC_FS_RxDataReady_Callback(uint8_t * RxBuf, uint8_t Length){
 }
 
 void USB_Rx_Parser(void){
+	char USB_MSG_TxBuf[1024];
+	uint8_t Si4468_CmdTxBuf[128], Si4468_CmdRxBuf[128];
 	if (USB_RxDataReadyFlag){
-		if (Reset){
+		if (USB_RxBufIndex == 0){
+			// NO-OP
+		}
+		else if (Reset){
 			if (USB_RxBufIndex == 1){
 				switch (*USB_RxBuf){
 					case 'y':
@@ -234,36 +266,36 @@ void USB_Rx_Parser(void){
 				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_ENTER_CMD);
 				break;
 			case 'm':
-				uint8_t MsgTxBuf[32];
+				uint16_t MeasuredTxPower = 0;
+				double MeasuredTxPowerDouble = 0;
+				HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET); // Turn the forward meas. amplifier ON
+				HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET); // Turn the reverse meas. amplifier ON
+				HAL_Delay(100); // Wait for the amplifiers to turn on
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_OPAMPS_ON);
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_MEAS_MODE_ON);
+				HAL_ADC_Start_DMA(&hadc1, ADC_Raw_Results, 2);
+				HAL_Delay(100);
+				HAL_ADC_Stop_DMA(&hadc1);
+				//CDC_Transmit_FS((uint8_t *) "\e[A\e[A", 6);
 				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					MsgTxBuf[0] = '\e';
-					MsgTxBuf[1] = '[';
-					MsgTxBuf[2] = '3';
-					MsgTxBuf[3] = '2';
-					MsgTxBuf[4] = 'm';
-
-					MsgTxBuf[5] = (uint8_t) ADC_Raw_Results[0];
-					MsgTxBuf[6] = (uint8_t) (ADC_Raw_Results[0] >> 8);
-
-					MsgTxBuf[7] = '\e';
-					MsgTxBuf[8] = '[';
-					MsgTxBuf[9] = '3';
-					MsgTxBuf[10] = '7';
-					MsgTxBuf[11] = 'm';
-					MsgTxBuf[12] = '\r';
-					MsgTxBuf[13] = '\n';
-					CDC_Transmit_FS((uint8_t *) MsgTxBuf, 14);
+					sprintf(USB_MSG_TxBuf, "\e[31m\tTx ADC raw: \e[37m%u    \r\n\e[32m\tRx ADC raw: \e[37m%u    \r\n", (uint16_t) ADC_Raw_Results[0], (uint16_t) ADC_Raw_Results[1]);
+					CDC_Transmit_FS((uint8_t *)USB_MSG_TxBuf, strlen(USB_MSG_TxBuf));
 				}
 				else{
-					HAL_Delay(1);
-					MsgTxBuf[0] = (uint8_t) ADC_Raw_Results[1];
-					MsgTxBuf[1] = (uint8_t) (ADC_Raw_Results[1] >> 8);
-
-					MsgTxBuf[2] = '\r';
-					MsgTxBuf[3] = '\n';
-					CDC_Transmit_FS((uint8_t *) MsgTxBuf, 4);
+					sprintf(USB_MSG_TxBuf, "\tTx ADC raw: %u    \r\n\tRx ADC raw: %u    \r\n", (uint16_t) ADC_Raw_Results[0], (uint16_t) ADC_Raw_Results[1]);
+					CDC_Transmit_FS((uint8_t *)USB_MSG_TxBuf, strlen(USB_MSG_TxBuf));
 				}
+				MeasuredTxPowerDouble = ConvertTxADCtoPower(ADC_Raw_Results[0]);
+				MeasuredTxPower = (uint16_t) (0.5 + MeasuredTxPowerDouble); // convert to integer
+				sprintf(USB_MSG_TxBuf, "\tEstimated Tx power [mW]: %d    \r\n", MeasuredTxPower);
+				HAL_Delay(1);
+				CDC_Transmit_FS((uint8_t *)USB_MSG_TxBuf, strlen(USB_MSG_TxBuf));
+				ExitSignalReceived = 0;
+				DenyReturnKey = 0;
+				HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET); // Turn the forward meas. amplifier OFF
+				HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET); // Turn the reverse meas. amplifier OFF
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_OPAMPS_OFF);
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_ENTER_CMD);
 				break;
 			case 'c':
 				ANSI_ColorsOn ^= 0x01; // Toggle the terminal color mode
@@ -281,78 +313,47 @@ void USB_Rx_Parser(void){
 				Reset = 1;
 				break;
 			case 'r':
-				uint8_t Si4468_CmdTxBuf[2], Si4468_CmdRxBuf[2];
+				DeviceState = STATE_RX;
 				Si4468_CmdTxBuf[0] = Si4468_CHANGE_STATE;
 				Si4468_CmdTxBuf[1] = Si4468_RX_STATE; // RX
 				Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
 				Si4468_WaitForCTS();
-
-				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[32mReceive mode active!\e[37m\r\n", 32);
-				}
-				else{
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "Receive mode active!\r\n", 22);
-				}
+				HAL_Delay(100);
+				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier stage 1 OFF
+				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_RESET); // Turn the RF amplifier stage 2 OFF
+				HAL_Delay(100);
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_RX_MODE_ON);
 				break;
 			case 't':
+				DeviceState = STATE_TX;
+				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); // Turn the RF amplifier stage 1 ON
+				HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET); // Turn the RF amplifier stage 2 ON
+				HAL_Delay(100);
 				Si4468_CmdTxBuf[0] = Si4468_CHANGE_STATE;
 				Si4468_CmdTxBuf[1] = Si4468_TX_STATE; // TX
 				Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
 				Si4468_WaitForCTS();
-
-				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[32mTransmit mode active!\e[37m\r\n", 33);
-				}
-				else{
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "Transmit mode active!\r\n", 23);
-				}
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_TX_MODE_ON);
 				break;
 			case 'i':
-				if (ANSI_ColorsOn){
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "\e[32m\r\nDevice info mode!\e[37m\r\n", 31);
-				}
-				else{
-					HAL_Delay(1);
-					CDC_Transmit_FS((uint8_t *) "Device info mode!\r\n", 19);
-				}
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_DEVICE_INFO);
 				break;
 			case 'p':
 				if (RF_AmpSupplyOnWarning){
-					if (ANSI_ColorsOn){
-						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_RF_AMP_WARNING);
-						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_ENTER_CMD);
-					}
-					else{
-						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_RF_AMP_WARNING);
-						USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_ENTER_CMD);
-					}
+					USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_RF_AMP_WARNING);
+					USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_ENTER_CMD);
 					RF_AmpSupplyOnWarning = 0;
 				}
 				else{
 					RF_AmpSupplyOn ^= 0x01; // Toggle the RF amp flag
 					if (RF_AmpSupplyOn){
-						if (ANSI_ColorsOn){
-							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_RF_AMP_ON);
-						}
-						else{
-							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_RF_AMP_ON);
-						}
+						USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_RF_AMP_ON);
 						HAL_Delay(1);
 						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET); // Turn the RF amplifier stage 1 ON
 						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET); // Turn the RF amplifier stage 2 ON
 					}
 					else{
-						if (ANSI_ColorsOn){
-							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_RF_AMP_OFF);
-						}
-						else{
-							USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_RF_AMP_OFF);
-						}
+						USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_RF_AMP_OFF);
 						HAL_Delay(1);
 						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET); // Turn the RF amplifier stage 1 OFF
 						HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_RESET); // Turn the RF amplifier stage 2 OFF
@@ -361,31 +362,89 @@ void USB_Rx_Parser(void){
 				}
 				break;
 			default:
-				if (ANSI_ColorsOn){
-					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_CMD_NOT_FOUND);
+				uint32_t parsed_number = 0;
+				uint8_t error = ParseUSBInputAsInteger(&parsed_number);
+				if (error){
+					USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_CMD_NOT_FOUND);
 				}
 				else{
-					USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_CMD_NOT_FOUND);
+					sprintf(USB_MSG_TxBuf, "Input was a number: %u    \r\n", (uint16_t)parsed_number);
+					CDC_Transmit_FS((uint8_t *) USB_MSG_TxBuf, strlen(USB_MSG_TxBuf));
+					if (DeviceState == STATE_TX){
+						Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+						Si4468_CmdTxBuf[1] = 0x22; // Group
+						Si4468_CmdTxBuf[2] = 0x04; // Number of properties
+						Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
+						Si4468_CmdTxBuf[4] = 0x08; //
+						Si4468_CmdTxBuf[5] = (uint8_t) parsed_number; // TRANSCEIVER TX POWER LEVEL
+						Si4468_CmdTxBuf[6] = 0x00; //
+						Si4468_CmdTxBuf[7] = 0x1D; //
+						Si4468_CmdTransmit(Si4468_CmdTxBuf, 8);
+						Si4468_WaitForCTS();
+						CDC_Transmit_FS((uint8_t *) "TX power adjusted!\r\n", 20);
+					}
 				}
 			}
 		}
 		else if((strncmp((char *)USB_RxBuf, "test", 4) == 0) && (USB_RxBufIndex == 4)){
 			HAL_Delay(1);
-			CDC_Transmit_FS((uint8_t *) "\r\nTested!\r\n", 11);
+			CDC_Transmit_FS((uint8_t *) "\tEaster egg~! uwu\r\n", 19);
 			HAL_Delay(1);
 			CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 		}
 		else{
-			if (ANSI_ColorsOn){
-				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_ON, MSG_CMD_NOT_FOUND);
+			uint32_t parsed_number = 0;
+			uint8_t error = ParseUSBInputAsInteger(&parsed_number);
+			if (error){
+				USB_CDC_TransmitPredefinedMessage(ANSI_ColorsOn, MSG_CMD_NOT_FOUND);
 			}
 			else{
-				USB_CDC_TransmitPredefinedMessage(ANSI_COLORS_OFF, MSG_CMD_NOT_FOUND);
+				sprintf(USB_MSG_TxBuf, "Input was a number: %u    \r\n", (uint16_t)parsed_number);
+				CDC_Transmit_FS((uint8_t *) USB_MSG_TxBuf, strlen(USB_MSG_TxBuf));
+				if (DeviceState == STATE_TX){
+					Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
+					Si4468_CmdTxBuf[1] = 0x22; // Group
+					Si4468_CmdTxBuf[2] = 0x04; // Number of properties
+					Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
+					Si4468_CmdTxBuf[4] = 0x08; //
+					Si4468_CmdTxBuf[5] = (uint8_t) parsed_number & 0x7F;// TRANSCEIVER TX POWER LEVEL
+					Si4468_CmdTxBuf[6] = 0x00; //
+					Si4468_CmdTxBuf[7] = 0x1D; //
+					Si4468_CmdTransmit(Si4468_CmdTxBuf, 8);
+					Si4468_WaitForCTS();
+					sprintf(USB_MSG_TxBuf, "TX power adjusted to: %u    \r\n", (uint8_t)parsed_number & 0x7F);
+					CDC_Transmit_FS(USB_MSG_TxBuf, strlen(USB_MSG_TxBuf));
+				}
 			}
 		}
 		USB_RxDataReadyFlag = 0; // Clear the flag
 		USB_RxBufIndex = 0; // Reset the index
 	}
+}
+
+double ConvertTxADCtoPower(uint32_t ADCrawResult){
+	return ((double)0.00002 * ADCrawResult * ADCrawResult) + ((double)0.0301 * ADCrawResult) + ((double)1.6865);
+}
+
+uint8_t ParseUSBInputAsInteger(uint32_t * result){
+	uint8_t error = 0;
+	uint32_t parsed_number = 0;
+	uint32_t order = 1;
+	// Try to parse the input as a decimal integer:
+	for (int i = 0; i < USB_RxBufIndex; i++){
+		if (USB_RxBuf[i] >= 48 && USB_RxBuf[i] <= 57){
+			for (int j = USB_RxBufIndex - (i + 1); j > 0; j--){
+				order *= 10;
+			}
+			parsed_number += (USB_RxBuf[i] - 48)*order;
+			order = 1;
+		}
+		else{
+			error = 1;
+		}
+	}
+	*result = parsed_number;
+	return error;
 }
 
 void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_Message){
@@ -408,6 +467,9 @@ void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_
 					"\tt - Put the device into transmit mode\r\n"
 					"\tm - Display the measured Tx/Rx power levels\r\n\n", 298);
 			break;
+		case MSG_DEVICE_INFO:
+			CDC_Transmit_FS((uint8_t *) "Device info:\r\n", 14);
+			break;
 		case MSG_ENTER_CMD:
 			CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 			break;
@@ -415,6 +477,18 @@ void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_
 			CDC_Transmit_FS((uint8_t *) "WARNING! When the amplifier is turned on, the current\r\n"
 					"consumption increases way above 500 mA. Make sure your USB port\r\n"
 					"can handle this load. To proceed, repeat the command.\r\n", 175);
+			break;
+		case MSG_TX_MODE_ON:
+			CDC_Transmit_FS((uint8_t *) "Transmit mode active!\r\n", 23);
+			break;
+		case MSG_TX_MODE_OFF:
+
+			break;
+		case MSG_RX_MODE_ON:
+			CDC_Transmit_FS((uint8_t *) "Receive mode active!\r\n", 22);
+			break;
+		case MSG_RX_MODE_OFF:
+
 			break;
 		case MSG_CMD_NOT_FOUND:
 			CDC_Transmit_FS((uint8_t *) "COMMAND NOT FOUND!\r\n"
@@ -442,6 +516,9 @@ void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_
 					"\tt - Put the device into transmit mode\r\n"
 					"\tm - Display the measured Tx/Rx power levels\r\n\n", 308);
 			break;
+		case MSG_DEVICE_INFO:
+			CDC_Transmit_FS((uint8_t *) "\e[32m\r\nDevice info:\e[37m\r\n", 26);
+			break;
 		case MSG_ENTER_CMD:
 			CDC_Transmit_FS((uint8_t *) "Enter a command: ", 17);
 			break;
@@ -455,6 +532,18 @@ void USB_CDC_TransmitPredefinedMessage(uint8_t ANSI_Color_State, uint8_t Select_
 			CDC_Transmit_FS((uint8_t *) "\e[31m\e[1mWARNING!\e[0m\e[31m When the amplifier is turned on, the current\r\n"
 					"consumption increases way above 500 mA. Make sure your USB port\r\n"
 					"can handle this load. To proceed, repeat the command.\e[37m\r\n", 198);
+			break;
+		case MSG_TX_MODE_ON:
+			CDC_Transmit_FS((uint8_t *) "\e[32mTransmit mode active!\e[37m\r\n", 33);
+			break;
+		case MSG_TX_MODE_OFF:
+
+			break;
+		case MSG_RX_MODE_ON:
+			CDC_Transmit_FS((uint8_t *) "\e[32mReceive mode active!\e[37m\r\n", 32);
+			break;
+		case MSG_RX_MODE_OFF:
+
 			break;
 		case MSG_CMD_NOT_FOUND:
 			CDC_Transmit_FS((uint8_t *) "\e[1m\e[31mCOMMAND NOT FOUND!\e[37m\e[0m\r\n"
@@ -481,9 +570,9 @@ uint8_t Si4468_CmdTransmitReceive(uint8_t * TxBuf, uint8_t * RxBuf, uint8_t Leng
 	return 0;
 }
 
-uint8_t Si4468_CmdTransmit(uint8_t * RxBuf, uint8_t Length){
+uint8_t Si4468_CmdTransmit(uint8_t * TxBuf, uint8_t Length){
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET); // Pull SPI NSS low
-	uint8_t result = HAL_SPI_Transmit(&hspi1, RxBuf, Length, HAL_MAX_DELAY);
+	uint8_t result = HAL_SPI_Transmit(&hspi1, TxBuf, Length, HAL_MAX_DELAY);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_SET); // Push SPI NSS high
 	if (result != HAL_OK) return 1;
 	return 0;
@@ -554,6 +643,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_LPUART1_UART_Init();
   MX_SPI1_Init();
@@ -570,43 +660,17 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
   HAL_Delay(10); // POR should not take more than 6 ms, but let's be safe...
 
-  // Configure the Si4468 transceiver based on the settings in the header file
-  uint8_t i = 0;
+  /* Configure the Si4468 transceiver based on the settings in the header file
+   * NB! To generate a custom config. header file, use the Silicon Lab's "Wireless Development Suite"
+   *
+   */
+  uint16_t i = 0;
   uint16_t Si4468_ConfigArrayLength = sizeof(Si4468_ConfigArray)/sizeof(Si4468_ConfigArray[0]);
-  while (Si4468_ConfigArray[i] != 0x00){
+  while (Si4468_ConfigArray[i] != 0x00){ // The last byte in the autogen. array should indicate the end
 	  Si4468_CmdTransmit(&Si4468_ConfigArray[i + 1], Si4468_ConfigArray[i]);
 	  Si4468_WaitForCTS();
 	  i += (Si4468_ConfigArray[i] + 1);
   }
-  // Send a POWER_UP command to Si4468
-  Si4468_CmdTxBuf[0] = Si4468_POWER_UP;
-  Si4468_CmdTxBuf[1] = 0x01;
-  Si4468_CmdTxBuf[2] = 0x01; // Using an external drive (TCXO) as clock source
-
-  /* TCXO frequency is 30 MHz (30'000'000 Hz; in hex: 0x01C9C380).
-   * NB! The byte order of the following hex value is reversed due to Endianness!
-   * Si4468 expects most significant byte first, but STM32L412 seems to
-   * be Little-Endian.
-   */
-  *((uint32_t *) &Si4468_CmdTxBuf[3]) = 0x80C3C901;
-  Si4468_CmdTransmit(Si4468_CmdTxBuf, 7);
-
-  /* Wait until Si4468 has finished the power-up sequence.
-   * The transceiver will be ready when the returned value of
-   * CTS (clear to send) byte will be equal to 0xFF
-   */
-  Si4468_WaitForCTS();
-
-  /* Set the XTAL capacitor bank to 0 when using a TCXO
-   *
-   */
-  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
-  Si4468_CmdTxBuf[1] = 0x00; // Group
-  Si4468_CmdTxBuf[2] = 0x01; // Number of properties
-  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
-  Si4468_CmdTxBuf[4] = 0x00; // Data
-  Si4468_CmdTransmit(Si4468_CmdTxBuf, 5);
-  Si4468_WaitForCTS();
 
   /* For testing purposes, put the Si4468 into Continuous Wave (CW) transmission mode
    *
@@ -617,72 +681,6 @@ int main(void)
   Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
   Si4468_CmdTxBuf[4] = 0x00; // Data
   Si4468_CmdTransmit(Si4468_CmdTxBuf, 5);
-  Si4468_WaitForCTS();
-
-  /* Set the TX base frequency at 435 MHz
-   *
-   */
-  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
-  Si4468_CmdTxBuf[1] = 0x40; // Group
-  Si4468_CmdTxBuf[2] = 0x08; // Number of properties
-  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
-  Si4468_CmdTxBuf[4] = 0x39; // PLL division integer 0x39
-  Si4468_CmdTxBuf[5] = 0x08; // PLL division fraction
-  Si4468_CmdTxBuf[6] = 0x00; // -,,-
-  Si4468_CmdTxBuf[7] = 0x00; // -,,-
-  Si4468_CmdTxBuf[8] = 0x05; //
-  Si4468_CmdTxBuf[9] = 0x3E; //
-  Si4468_CmdTxBuf[10] = 0x20; //
-  Si4468_CmdTxBuf[11] = 0xFE; //
-  Si4468_CmdTransmit(Si4468_CmdTxBuf, 12);
-  Si4468_WaitForCTS();
-
-  /* Set the frequency deviation
-   *
-   */
-  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
-  Si4468_CmdTxBuf[1] = 0x20; // Group
-  Si4468_CmdTxBuf[2] = 0x01; // Number of properties
-  Si4468_CmdTxBuf[3] = 0x0C; // Index of the first property to be set
-  Si4468_CmdTxBuf[4] = 0x50;
-  Si4468_CmdTransmit(Si4468_CmdTxBuf, 5);
-  Si4468_WaitForCTS();
-
-  /* Set the output power
-   *
-   */
-  Si4468_CmdTxBuf[0] = Si4468_SET_PROPERTY;
-  Si4468_CmdTxBuf[1] = 0x22; // Group
-  Si4468_CmdTxBuf[2] = 0x04; // Number of properties
-  Si4468_CmdTxBuf[3] = 0x00; // Index of the first property to be set
-  Si4468_CmdTxBuf[4] = 0x08;
-  Si4468_CmdTxBuf[5] = 0x7F; // Power level [0x00 ; 0x7F]
-  Si4468_CmdTxBuf[6] = 0x00;
-  Si4468_CmdTxBuf[7] = 0x1D;
-  Si4468_CmdTransmit(Si4468_CmdTxBuf, 8);
-  Si4468_WaitForCTS();
-
-  /* Read the "part info" of the device to make sure the initialization worked
-   * and we have a good SPI communication going...
-   */
-  Si4468_CmdTxBuf[0] = Si4468_PART_INFO;
-  Si4468_CmdRxBuf[1] = 0;
-  Si4468_CmdTransmitReceive(Si4468_CmdTxBuf, Si4468_CmdRxBuf, 2);
-  Si4468_CmdReadCmdReplyWhenReady(Si4468_CmdRxBuf, 8);
-
-  /* Configure the GPIO pins of the Si4468
-   *
-   */
-  Si4468_CmdTxBuf[0] = Si4468_GPIO_PIN_CFG;
-  Si4468_CmdTxBuf[1] = 0x01;
-  Si4468_CmdTxBuf[2] = 0x01;
-  Si4468_CmdTxBuf[3] = 0x20;
-  Si4468_CmdTxBuf[4] = 0x21;
-  Si4468_CmdTxBuf[5] = 0x27;
-  Si4468_CmdTxBuf[6] = 0x0B;
-  Si4468_CmdTxBuf[7] = 0x00;
-  Si4468_WaitForCTS();
-  Si4468_CmdTransmit(Si4468_CmdTxBuf, 8);
   Si4468_WaitForCTS();
 
   // Wait for the COM port to open:
@@ -700,6 +698,7 @@ int main(void)
   while (1)
   {
 	  USB_Rx_Parser();
+
 	  /*
 	  sprintf(USB_TxBuf, "%u\r\n", counter);
 	  counter++;
@@ -789,11 +788,11 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.NbrOfConversion = 2;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
@@ -817,10 +816,19 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_11;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_12CYCLES_5;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.OffsetNumber = ADC_OFFSET_NONE;
   sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -902,6 +910,22 @@ static void MX_SPI1_Init(void)
   /* USER CODE BEGIN SPI1_Init 2 */
 
   /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
 }
 

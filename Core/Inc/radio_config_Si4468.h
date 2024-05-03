@@ -21,7 +21,7 @@
 /*
 // Crys_freq(Hz): 30000000    Crys_tol(ppm): 20    IF_mode: 2    High_perf_Ch_Fil: 1    OSRtune: 0    Ch_Fil_Bw_AFC: 0    ANT_DIV: 0    PM_pattern: 0
 // MOD_type: 2    Rsymb(sps): 9600    Fdev(Hz): 4800    RXBW(Hz): 150000    Manchester: 0    AFC_en: 0    Rsymb_error: 0.0    Chip-Version: 2
-// RF Freq.(MHz): 435    API_TC: 29    fhst: 19200    inputBW: 0    BERT: 0    RAW_dout: 0    D_source: 0    Hi_pfm_div: 1
+// RF Freq.(MHz): 435    API_TC: 29    fhst: 250000    inputBW: 0    BERT: 0    RAW_dout: 0    D_source: 0    Hi_pfm_div: 1
 // API_ARR_Det_en: 0    Fdev_error: 0    API_ETSI: 0
 //
 // # RX IF frequency is  -468750 Hz
@@ -51,7 +51,7 @@
 // Command:                  RF_GPIO_PIN_CFG
 // Description:              Configures the GPIO pins.
 */
-#define RF_GPIO_PIN_CFG 0x13, 0x01, 0x01, 0x20, 0x21, 0x27, 0x0B, 0x00
+#define RF_GPIO_PIN_CFG 0x13, 0x01, 0x01, 0x20, 0x21, 0x01, 0x0B, 0x00
 
 /*
 // Set properties:           RF_GLOBAL_XO_TUNE_2
@@ -77,18 +77,15 @@
 #define RF_GLOBAL_CONFIG_1 0x11, 0x00, 0x01, 0x03, 0x20
 
 /*
-// Set properties:           RF_INT_CTL_ENABLE_4
-// Number of properties:     4
+// Set properties:           RF_INT_CTL_ENABLE_1
+// Number of properties:     1
 // Group ID:                 0x01
 // Start ID:                 0x00
-// Default values:           0x04, 0x00, 0x00, 0x04,
+// Default values:           0x04,
 // Descriptions:
 //   INT_CTL_ENABLE - This property provides for global enabling of the three interrupt groups (Chip, Modem and Packet Handler) in order to generate HW interrupts at the NIRQ pin.
-//   INT_CTL_PH_ENABLE - Enable individual interrupt sources within the Packet Handler Interrupt Group to generate a HW interrupt on the NIRQ output pin.
-//   INT_CTL_MODEM_ENABLE - Enable individual interrupt sources within the Modem Interrupt Group to generate a HW interrupt on the NIRQ output pin.
-//   INT_CTL_CHIP_ENABLE - Enable individual interrupt sources within the Chip Interrupt Group to generate a HW interrupt on the NIRQ output pin.
 */
-#define RF_INT_CTL_ENABLE_4 0x11, 0x01, 0x04, 0x00, 0x07, 0xFF, 0xFF, 0x7F
+#define RF_INT_CTL_ENABLE_1 0x11, 0x01, 0x01, 0x00, 0x00
 
 /*
 // Set properties:           RF_FRR_CTL_A_MODE_4
@@ -102,7 +99,7 @@
 //   FRR_CTL_C_MODE - Fast Response Register C Configuration.
 //   FRR_CTL_D_MODE - Fast Response Register D Configuration.
 */
-#define RF_FRR_CTL_A_MODE_4 0x11, 0x02, 0x04, 0x00, 0x02, 0x04, 0x06, 0x08
+#define RF_FRR_CTL_A_MODE_4 0x11, 0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00
 
 /*
 // Set properties:           RF_PREAMBLE_TX_LENGTH_9
@@ -141,7 +138,7 @@
 //   SYNC_BITS2_15_8 - Sync word 2.
 //   SYNC_BITS2_7_0 - Sync word 2.
 */
-#define RF_SYNC_CONFIG_10 0x11, 0x11, 0x0A, 0x00, 0x01, 0x3E, 0x6A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+#define RF_SYNC_CONFIG_10 0x11, 0x11, 0x0A, 0x00, 0x01, 0xB4, 0x2B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 
 /*
 // Set properties:           RF_PKT_CRC_CONFIG_12
@@ -163,7 +160,7 @@
 //   PKT_LEN_ADJUST - Provides for adjustment/offset of the received packet length value (in order to accommodate a variety of methods of defining total packet length).
 //   PKT_TX_THRESHOLD - TX FIFO almost empty threshold.
 */
-#define RF_PKT_CRC_CONFIG_12 0x11, 0x12, 0x0C, 0x00, 0x05, 0x01, 0x08, 0xFF, 0xFF, 0x20, 0x02, 0x80, 0x00, 0x00, 0x00, 0x30
+#define RF_PKT_CRC_CONFIG_12 0x11, 0x12, 0x0C, 0x00, 0x04, 0x01, 0x08, 0xFF, 0xFF, 0x20, 0x02, 0x00, 0x00, 0x00, 0x00, 0x30
 
 /*
 // Set properties:           RF_PKT_RX_THRESHOLD_12
@@ -185,7 +182,7 @@
 //   PKT_FIELD_3_LENGTH_7_0 - Unsigned 13-bit Field 3 length value.
 //   PKT_FIELD_3_CONFIG - General data processing and packet configuration bits for Field 3.
 */
-#define RF_PKT_RX_THRESHOLD_12 0x11, 0x12, 0x0C, 0x0C, 0x30, 0x00, 0x01, 0x04, 0x80, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00
+#define RF_PKT_RX_THRESHOLD_12 0x11, 0x12, 0x0C, 0x0C, 0x30, 0x00, 0x07, 0x04, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 
 /*
 // Set properties:           RF_PKT_FIELD_3_CRC_CONFIG_12
@@ -531,7 +528,7 @@
 //   PA_BIAS_CLKDUTY - Configuration of the PA Bias and duty cycle of the TX clock source.
 //   PA_TC - Configuration of PA ramping parameters.
 */
-#define RF_PA_MODE_4 0x11, 0x22, 0x04, 0x00, 0x08, 0x7F, 0x00, 0x1D
+#define RF_PA_MODE_4 0x11, 0x22, 0x04, 0x00, 0x08, 0x05, 0x00, 0x1D
 
 /*
 // Set properties:           RF_SYNTH_PFDCP_CPFF_7
@@ -588,7 +585,7 @@
 //   FREQ_CONTROL_W_SIZE - Set window gating period (in number of crystal reference clock cycles) for counting VCO frequency during calibration.
 //   FREQ_CONTROL_VCOCNT_RX_ADJ - Adjust target count for VCO calibration in RX mode.
 */
-#define RF_FREQ_CONTROL_INTE_8 0x11, 0x40, 0x08, 0x00, 0x39, 0x08, 0x00, 0x00, 0x05, 0x3E, 0x20, 0xFE
+#define RF_FREQ_CONTROL_INTE_8 0x11, 0x40, 0x08, 0x00, 0x39, 0x08, 0x00, 0x00, 0x44, 0x44, 0x20, 0xFE
 
 
 // AUTOMATICALLY GENERATED CODE!
@@ -601,7 +598,7 @@
         0x08, RF_GPIO_PIN_CFG, \
         0x06, RF_GLOBAL_XO_TUNE_2, \
         0x05, RF_GLOBAL_CONFIG_1, \
-        0x08, RF_INT_CTL_ENABLE_4, \
+        0x05, RF_INT_CTL_ENABLE_1, \
         0x08, RF_FRR_CTL_A_MODE_4, \
         0x0D, RF_PREAMBLE_TX_LENGTH_9, \
         0x0E, RF_SYNC_CONFIG_10, \
